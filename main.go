@@ -30,7 +30,7 @@ func main() {
 		log.Fatalf("Invalid console IP address")
 	}
 
-	addr1, err := net.ResolveUDPAddr("udp", "127.0.0.1:10022")
+	addr1, err := net.ResolveUDPAddr("udp", "0.0.0.0:10022")
 	if err != nil {
 		log.Fatalf("failed resolving local port")
 	}
@@ -52,6 +52,8 @@ func main() {
 		log.Fatalf("Failed setting up connection to desk: %s", err)
 	}
 
+	go conn.ListenAndServe()
+
 	commandDispatcher := osc.NewStandardDispatcher()
 	err = commandDispatcher.AddMsgHandler("/fade/channel", channelFade)
 	if err != nil {
@@ -67,7 +69,7 @@ func main() {
 	}
 
 	server := &osc.Server{
-		Addr:       "0.0.0.0",
+		Addr:       "0.0.0.0:10021",
 		Dispatcher: commandDispatcher,
 	}
 	err = server.ListenAndServe()
@@ -82,14 +84,25 @@ func channelFade(msg *osc.Message) {
 		log.Printf("failed retrieving ID: %s (%s)", err, msg.String())
 		return
 	}
-	target, err := msg.Arguments.Float32(0)
-	if err != nil {
-		log.Printf("failed retrieving target: %s (%s)", err, msg.String())
+	var target float32
+	var duration float32
+
+	switch msg.Arguments[1].(type) {
+	case float32:
+		target = msg.Arguments[1].(float32)
+	case int32:
+		target = float32(msg.Arguments[1].(int32))
+	default:
+		log.Printf("invalid argument format for target")
 		return
 	}
-	duration, err := msg.Arguments.Float32(0)
-	if err != nil {
-		log.Printf("failed retrieving duration: %s (%s)", err, msg.String())
+	switch msg.Arguments[2].(type) {
+	case float32:
+		duration = msg.Arguments[2].(float32)
+	case int32:
+		duration = float32(msg.Arguments[2].(int32))
+	default:
+		log.Printf("invalid argument format for duration")
 		return
 	}
 
@@ -117,6 +130,7 @@ func channelFade(msg *osc.Message) {
 	time.Sleep(QueryDelay)
 
 	go Fade(conn, address, channelMixFader[int(id-1)], target, time.Duration(duration*float32(time.Second)))
+	channelMixFader[int(id-1)] = target
 }
 
 func auxFade(msg *osc.Message) {
@@ -160,6 +174,7 @@ func auxFade(msg *osc.Message) {
 	time.Sleep(QueryDelay)
 
 	go Fade(conn, address, auxMixFader[int(id-1)], target, time.Duration(duration*float32(time.Second)))
+	auxMixFader[int(id-1)] = target
 }
 
 func busFade(msg *osc.Message) {
@@ -203,6 +218,7 @@ func busFade(msg *osc.Message) {
 	time.Sleep(QueryDelay)
 
 	go Fade(conn, address, busMixFader[int(id-1)], target, time.Duration(duration*float32(time.Second)))
+	busMixFader[int(id-1)] = target
 }
 
 func responseDispatch(msg *osc.Message) {
@@ -272,6 +288,8 @@ func Fade(client *osc.ServerAndClient, address string, start float32, target flo
 
 	increment := (target - start) / ticks
 
+	log.Printf("Fading %s from %3f to %3f over %1f seconds", address, start, target, float64(duration)/float64(time.Second))
+
 	value := start
 
 	for range ticker.C {
@@ -280,7 +298,9 @@ func Fade(client *osc.ServerAndClient, address string, start float32, target flo
 		}
 
 		value += increment
-		if value >= target {
+		if target > start && value >= target {
+			break
+		} else if target < start && value <= target {
 			break
 		}
 
